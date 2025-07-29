@@ -1,45 +1,89 @@
 import random
 import numpy as np
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from collections import deque
 
-class QAgent:
-    def __init__(self, learning_rate=0.1, discount_factor=0.99,
-                 exploration_rate=1.0, exploration_decay=0.995, min_exploration=0.01):
+class DQNetwork(nn.Module):
+    def __init__(self, state_dim, action_dim):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(state_dim, 256),
+            nn.ReLU(),
+            nn.Linear(256, 64),
+            nn.ReLU(),
+            nn.Linear(64, action_dim)
+        )
 
-        self.actions = [0, 1, 2, 3]  # e.g., [0, 1, 2, 3] for up/down/left/right
-        self.q_table = {}       # {(state): [q_values_per_action]}
-        self.alpha = learning_rate
+    def forward(self, state):
+        return self.net(state)
+
+
+class DQNAgent:
+    def __init__(self, state_dim, action_dim, learning_rate, discount_factor,
+                 exploration_rate, exploration_decay, min_exploration):
+
+        self.actions = list(range(action_dim))
+        self.state_dim = state_dim
+        self.action_dim = action_dim
+
+        self.q_network = DQNetwork(state_dim, action_dim)
+        self.target_network = DQNetwork(state_dim, action_dim)
+        self.target_network.load_state_dict(self.q_network.state_dict())
+        self.target_network.eval()
+
+        self.optimizer = optim.Adam(self.q_network.parameters(), lr=learning_rate)
+        self.loss_fn = nn.MSELoss()
+
         self.gamma = discount_factor
         self.epsilon = exploration_rate
         self.epsilon_decay = exploration_decay
         self.min_epsilon = min_exploration
 
-    def get_q_values(self, state):
-        if state not in self.q_table:
-            self.q_table[state] = [0.0 for _ in self.actions]
-        return self.q_table[state]
-        
-    def choose_action(self, state):
-        p = random.random()
+        self.replay_buffer = deque(maxlen=10000)
+        self.batch_size = 512
+        self.update_target_every = 300
+        self.steps = 0
 
-        if p < self.epsilon:
-            chosen_action = random.choice(self.actions)
+    def choose_action(self, state, greedy=False):
+        if greedy or random.random() > self.epsilon:
+            state_tensor = torch.FloatTensor(state).unsqueeze(0)
+            with torch.no_grad():
+                q_values = self.q_network(state_tensor)
+            return q_values.argmax().item()
         else:
-            q_values = self.get_q_values(state)
-            chosen_action = np.argmax(q_values)
-            self.epsilon *= self.epsilon_decay
+            return random.choice(self.actions)
 
-        return chosen_action
+    def store_experience(self, state, action, reward, next_state, done):
+        self.replay_buffer.append((state, action, reward, next_state, done))
 
+    def learn(self):
+        if len(self.replay_buffer) < self.batch_size:
+            return
 
-    def learn(self, state, action, reward, next_state, done):
+        batch = random.sample(self.replay_buffer, self.batch_size)
+        states, actions, rewards, next_states, dones = zip(*batch)
 
-        q_values = self.get_q_values(state)
-        current_q = q_values[action]
+        states = torch.FloatTensor(states)
+        actions = torch.LongTensor(actions).unsqueeze(1)
+        rewards = torch.FloatTensor(rewards)
+        next_states = torch.FloatTensor(next_states)
+        dones = torch.FloatTensor(dones)
 
-        if done:
-            target = reward
-        else:
-            next_q_values = self.get_q_values(next_state)
-            target = reward + self.gamma * max(next_q_values)
+        q_values = self.q_network(states).gather(1, actions).squeeze()
 
-        q_values[action] += self.alpha * (target - current_q)
+        with torch.no_grad():
+            max_next_q_values = self.target_network(next_states).max(1)[0]
+            target_q = rewards + self.gamma * max_next_q_values * (1 - dones)
+
+        loss = self.loss_fn(q_values, target_q)
+        self.optimizer.zero_grad()
+        loss.backward()
+        self.optimizer.step()
+
+        self.steps += 1
+        if self.steps % self.update_target_every == 0:
+            self.target_network.load_state_dict(self.q_network.state_dict())
+
+        self.epsilon = max(self.min_epsilon, self.epsilon * self.epsilon_decay)

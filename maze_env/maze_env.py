@@ -15,18 +15,19 @@ class MazeEnv:
         return tuple(self.agent_pos)
 
     def step(self, action):
-        # Action: 0=up, 1=down, 2=left, 3=right
         directions = [(-1, 0), (1, 0), (0, -1), (0, 1)]
         dy, dx = directions[action]
         y, x = self.agent_pos
         ny, nx = y + dy, x + dx
 
-        # Validate movement
         if 0 <= ny < self.height and 0 <= nx < self.width and self.maze[ny][nx] == 0:
             self.agent_pos = [ny, nx]
+            reward = 0.01  
+        else:
+            reward = -0.7  
 
-        # Check if the agent has arrived
         done = (self.agent_pos == list(self.goal))
-        reward = 1 if done else -0.01  # reward
+        if done:
+            reward = 4 
 
         return self.get_state(), reward, done
